@@ -1,0 +1,2042 @@
+// RTOS Project 2
+// Spring 2013 CLASS PROJECT RTOS CODE
+// RTOS TEAM
+// SACHIN JAYARAM 1000877585
+// NAYANA PARASHAR
+// AJAY
+
+//-----------------------------------------------------------------------------
+// Objectives and notes             
+//-----------------------------------------------------------------------------
+
+// Target uC:       33FJ128MC802
+// Devices used:    LEDs and PBs
+
+// Translate_flag is made 1 in straight function and zero in Timer Interrupt 2
+//
+
+//-----------------------------------------------------------------------------
+// Device includes and assembler directives             
+//------------------------------------------------------------------------------------------------------
+
+#include <p33FJ128MC802.h>
+#define FCY 40000000UL                       // instruction cycle rate
+#include <libpic30.h>                        // __delay32
+                                             // __delay_ms (max value is 268)
+                                             // __delay_us
+//#include "rover_com.h"
+
+//_CONFIG1(FWDTEN_OFF & JTAGEN_OFF)            // set fuses
+//%_CONFIG2(POSCMOD_HS & FNOSC_PRIPLL)
+ 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <ctype.h>
+
+//------------------------------------------------#DEFINE-----------------------------------------------
+
+#define RIGHTDIR LATAbits.LATA4
+#define LEFTDIR LATAbits.LATA3
+#define MODE_COOPERATIVE 0
+#define MODE_PREEMPTIVE  1
+#define T3IF IFS0bits.T3IF
+#define T3IP IPC2bits.T3IP
+#define T3IE IEC0bits.T3IE
+#define T1IF IFS0bits.T1IF
+#define T1IP IPC0bits.T1IP
+#define T1IE IEC0bits.T1IE
+#define TRUE  1
+#define FALSE 0
+#define clkwise 1
+#define cclkwise 0
+#define CLKWISE 0 
+#define ANTICLKWISE 1
+#define MOVING 1
+#define STOPPED 0
+#define MAX_QUEUE_SIZE 10
+#define STATE_INVALID    0 // no task
+#define STATE_READY      1 // ready to run
+#define STATE_BLOCKED    2 // has run, but now blocked by semaphore
+#define STATE_DELAYED    3 // has run, but now awaiting timer
+#define MAX_TASKS 10       // maximum number of valid tasks
+#define BAUD_115200 21	  // U2BRG VALUE 21 for 115200 baud rate
+#define PIN_YELLOW LATBbits.LATB15            // define i/o
+#define PIN_ORANGE LATBbits.LATB14
+#define PIN_GREEN LATBbits.LATB4
+#define PIN_RED LATBbits.LATB5
+
+//-------------------------------------------------------------------------------------------------------
+
+int task_current = 0;      // index of last dispatched task
+int task_count = 0;        // total number of valid tasks
+int delaycount = 0;
+//Comm TASKS
+void access(void);
+void process_tx_data(void);
+void process_rx_data(void);
+
+//-------------------------------------------------------------------------------------------------------
+
+
+//-------------------------------------------------------------------------------------------------------
+// RTOS Defines and Kernel Variables                
+//-------------------------------------------------------------------------------------------------------
+
+//---------------------------------------------FOR TRIANGULATION-----------------------------------------
+
+//char sbuf[256];
+unsigned int rd_ind=0, wr_ind=0 , full=0;
+float pi = 3.141;///1024)
+//double pi_deg =(5825/1024/1024);// to be checked
+
+unsigned int qe_count=0;
+int r=0;
+int g=0;
+int b=0;
+unsigned int speed = 0x125;
+int r1 = 0, r2 = 0, g1 = 0, g2 = 0, b1 = 0, b2 = 0;
+int flag_r=0, flag_g=0, flag_b=0;
+int skip_count = 3;
+unsigned int dir_flag;
+unsigned int beacon;
+float fx_temp1=0,  fx_temp12=0, fx_temp2=0, fx_temp3=0, fx_temp4=0, fx_temp5=0, fx_temp6=0, fx_alpha=0, fx_beta=0, fx_sine_alpha=0, fx_sine_beta=0,fx_cos_alpha=0, fx_cos_beta=0;
+float fx_ang_rxb, fx_ang_bxg, fx_ang_gxr, fx_ang_xbg, fx_ang_rbx, fx_ang_xgb,fx_beaconheadangle,fx_arctan,fx_phi1;
+long int fx_indexangle = 210;
+float fx_ang_rbg, fx_ang_bgr, fx_ang_grb;
+static long int fx_rx, fx_ry, fx_gx, fx_gy, fx_bx, fx_by;
+float fx_rg, fx_bg, fx_rb, fx_cnt_inr, fx_cnt_ing, fx_cnt_inb, fx_xg, fx_xr, fx_xb;
+float A11,A12,A21,A22,B1,B2,	fx_temp_y=0,	fx_temp_x=0;
+float fx_p,fx_q,fx_f,fx_newp,fx_newq;
+int translate_flag=0;
+static int fx_rover_x,fx_rover_y,fx_phi;
+
+//unsigned int dir_flag;
+//int skip_count;
+//unsigned int speed;
+//int qe_count;
+//int flag_r,flag_g,flag_b;//store values of three flags in the array
+
+
+float index_beacon_angle; // angle between index and beacon.. comes from kushal
+float index_head_angle; // offset angle between index point and head of rover- fixed
+int Rcount1c;			// count at  interrupt - clockwise rotation of sensor
+int Rcount2c;			// count after interrupt clockwise rotation of sensor
+int Rcount1a;			// count after interrupt anticlockwise rotation of sensor
+int Rcount2a;			// count after interrupt anticlockwise rotation of sensor
+int Rcount;				// count at beacon
+int compare_count;
+int count_check_flag;
+int sensor_index_count;		// count when sensor is rotating from kushal
+int sensor_buf1_count;
+int sensor_buf2_count;
+int sensor_buf3_count;
+int head_beacon_angle;// angle between head and beacon
+int rotate_rover_angle;//alpha2
+int phi_rover;
+int phi_new_rover;
+int delta_phi;
+int rover_dir_flag;//1-clockwise,0anticlockwise
+int rotate_receive_flag = 2;
+int rotate_grant_flag;
+int rotate_error_flag;
+int rotate_rover_flag = 1;//rotation of rover
+int sensor_start_flag;
+int PWM;// speed
+int rotate_angle_count;//alpha2 count
+int beacon_found = 0;
+int flag_beacon;
+int interrupt_edge_beacon;//flag for the beacon for which beacon your tracking
+int PWM_dir;
+unsigned int flag_speed = 1;
+
+//-----------------------------------------------------------------------------------------------------
+
+//-------------------------------------------FOR ROTATE------------------------------------------------
+int TempL, TempR;
+int Angle;
+int Strips;
+long int count = 0;
+int go = 0;
+int flag;
+int count_stripsL,count_stripsR;
+int casechk,num,denom;
+float theta,phitemp;
+int phi;
+int flag_mode = 2;
+
+//-------------------------------------------------------------------------------------------------------
+
+//----------------------------------------FOR DRIVE STRAIGHT---------------------------------------------
+
+//float Xset=0.3;//meters
+int total_stripe;
+float dist_bt_strips=2.29;//9;//0.0229;
+float x_left, x_right, x_left_cap, x_right_cap;
+int dist_stripe = 0;
+//Compensation
+int alpha=30,alpha_l = 0,alpha_r = 0,error;
+int beta=100;
+int left_count;
+int right_count;
+int logic_en = 0;
+
+//-------------------------------------------------------------------------------------------------------
+
+//--------------------------------------------FOR GYRO---------------------------------------------------
+
+int  temp1, temp2, ticks=0, i=0;
+long int gyro_bias=0,yawrate=0, acc_bias=0,sum_temp1=0,sum_temp2=0, tilt=0, yawsum=0, yaw=0;
+
+//-------------------------------------------------------------------------------------------------------
+
+//----------------------------------------FOR Localization-----------------------------------------------
+
+// currently i don't how will wheel sensor will produce yaw angle 
+
+int w1=512,w2=512;   	// total 1024   initially all weights are equal    they can be global or local
+int e1= 30; int e2=30;   // maximum yaw change than can happen between two calculations
+int health1, health2, yaw_best_old;    //   if the sensor measurement is logical
+
+//-------------------------------------------------------------------------------------------------------
+
+// function pointer
+typedef void (*_fn)();
+
+int rtos_mode;             // mode
+
+int *SP = (int*)0x1E;
+
+//--------------------------------------STRUCTURE DEFINITIONS---------------------------------------------
+
+struct semaphore
+{
+  unsigned int count;
+  unsigned int queue_size;
+  unsigned int process_queue[MAX_QUEUE_SIZE]; // store task index here
+} *s, key_pressed, key_released, flash_req, rotation_complete, beacon_fallingedge, beacon_risingedge;
+
+struct _tcb
+{
+  unsigned int state;            // see STATE_ values above
+  unsigned int pid;              // used to uniquely identify process
+  unsigned int sp;               // location of stack pointer for process
+  unsigned int priority;         // 0=lowest, 7=highest
+  unsigned int current_priority;
+  unsigned int ticks;            // ticks until sleep complete
+} tcb[MAX_TASKS];
+
+struct dlink_triang
+{
+  int xr, yr, xb, yb, xg, yg; // fix co-ordiantes for beacons
+  int rw_bit;  // Update this bit to 1 whenever new value is available and update this bit to 0 whenever it is read
+}*dlink_triang;
+
+
+struct ulink_triang
+{
+  int x_tri, y_tri, phi_degree_tri, delphi_degree_tri; // X, Y and Phi from triangualtion team
+  int rw_bit;  // Update this bit to 1 whenever new value is available and update this bit to 0 whenever it is read
+}*ulink_triang;
+
+struct navigate
+{
+  int current_x;
+  int current_y;
+  int current_phi;
+  int des_x;
+  int des_y;
+  int err_theta;
+  int distance;
+  int angle_correction;
+  int rover_status;
+}nav;
+
+struct comm
+{
+  int cmd;
+  int received;
+  int x;
+  int y;
+}command;
+
+struct err
+{
+ int stoprover;
+}err_cmd;
+
+struct ulink_IMU   // the Yaw and tilt data that will come from gyro and acc. do we need a ready bit here?
+{
+int yaw; 
+int tilt;
+}*ulink_IMU;
+
+struct ulink_LOC  //  localization data 
+{
+int yaw_best_old;
+int yaw_best;
+}* ulink_LOC;
+
+struct						//Dummy beacon info structure
+{
+	unsigned char count;
+	int x1;
+	int x2;
+	int x3;
+	int y1;
+	int y2;
+	int y3;
+} beacon_info;
+
+struct comm_to_motion_type
+{
+	int command;
+	int x;
+	int y; 
+	int rover_is_not_moving;
+}comm_to_motion;
+
+struct motion_to_comm_type
+{
+	int current_x;
+	int current_y;
+	int current_phi;
+	int current_distance;
+	int yaw;
+	int yaw_best;
+	int tilt;
+	int x_tri;
+	int y_tri;
+	int phi_tri;
+	int del_phi_tri;
+	int rw_bit;
+}motion_to_comm;
+
+//-------------------------------------------------------------------------------------------------------
+
+unsigned int stack[MAX_TASKS][256];
+
+//-------------------------------------------------------------------------------------------------------
+// RTOS Kernel                
+//-------------------------------------------------------------------------------------------------------
+
+void rtos_init(int mode)
+{
+  int i;
+  rtos_mode = mode;
+  // no tasks running
+  task_count = 0;
+  // clear out tcb records
+  for (i = 0; i < MAX_TASKS; i++)
+  {
+    tcb[i].state = STATE_INVALID;
+    tcb[i].pid = 0;
+  }
+}
+
+void timer_init()
+{
+	init_slot_timer();
+
+  //Timer 2 is used for PWM OC control
+  T2CONbits.TCS = 0;
+  T2CONbits.TCKPS = 0; 			//Divide by 8
+  T2CONbits.TON = 1;
+  IEC0bits.T2IE = 1;
+
+  // REQUIRED: setup timer 3 for 1ms system timer for RTOS TEAM
+  T3CONbits.TCS = 0;
+  T3CONbits.TCKPS = 2;
+  PR3 = 625;
+  T3CONbits.TON = 1;
+  //IEC0bits.T3IE = 1;
+
+  //Timer 4 is used as a counter for measuring left wheel distance
+  T4CONbits.TCS = 1;			//External clock for counting the stripss
+  T4CONbits.TCKPS = 0;
+  T4CONbits.TON = 1;
+  //PR4 = 1;						//Interrupt Every Strip
+  //IEC1bits.T4IE = 1;
+  IEC1bits.T4IE = 1;
+  //Timer 5 is used as a counter for measuring right wheel distance
+  T5CONbits.TCS = 1;
+  T5CONbits.TCKPS = 0;
+  T5CONbits.TON = 1;
+  //PR5 = 1;						//Interrupt Every Strip
+  IEC1bits.T5IE = 1;
+}
+
+void pwm_init()
+{
+  PR2 = 0x3FF;					//1023
+  //Turn-off OC1 for the changes to be applied
+  //Right Wheel
+  OC1CON = 0;					//Set first cycle DC
+  OC1R = 0;
+  OC1RS = 0;					//Set ongoing DC to 0
+  //Set OC1 to PWM mode with TMR2 clock source
+  OC1CONbits.OCTSEL = 0;
+  OC1CONbits.OCM = 6;
+
+  //Left Wheel   
+  OC2CON = 0;					
+  OC2R = 0;						//Set first cycle DC
+  OC2RS = 0;					//Set ongoing DC to 0
+  //Set OC2 to PWM mode with TMR2 clock source
+  OC2CONbits.OCTSEL = 0;
+  OC2CONbits.OCM = 6;
+
+  OC3CON = 0;					// turn-off OC to make sure changes can be applied
+  OC3R = 0;						// set first cycle d.c.
+  OC3RS = 0;					// set ongoing d.c. to 0
+  //Set OC3 to PWM mode with TMR2 clock source
+  OC3CONbits.OCTSEL = 0;		
+  OC3CONbits.OCM = 6;
+}
+
+void pwm_setdc_left(unsigned int dc)
+{
+  OC1RS = dc;
+}
+
+void pwm_setdc_right(unsigned int dc)
+{
+  OC2RS = dc;
+}
+
+void pwm_setdc_triangulation(unsigned int dc)
+{
+  OC3RS = dc;
+}
+
+void adc_init()
+{
+  // setup conversion clock to 1 MHz (arbitrary)
+  // (ADCS = Tad / Tcy - 1 = 39)
+  AD1CON3bits.ADCS = 39;
+ // individual sampling sampling
+  AD1CON1bits.SIMSAM=0;
+  //AD1CON2bits.CHPS=1;
+  // enable auto-convert
+  AD1CON1bits.SSRC = 7;
+
+  // set auto-sample time to 31 x Tad
+  AD1CON3bits.SAMC = 31;
+
+  // set format for 12b result to signed integer
+ AD1CON1bits.AD12B = 1; // WE CANT DO 12 BIT SIMULATANIOUS SAMPLING WITH THIS 
+  AD1CON1bits.FORM = 0;
+
+  // turn-on A/D
+  AD1CON1bits.ADON = 1;
+}
+
+int read_adc(int chan)
+{
+
+  // setup references
+  AD1CON2bits.VCFG = 0;
+  
+  // set positive input to AN1, negative to Vss
+  AD1CHS0bits.CH0NA = 0;
+  AD1CHS0bits.CH0SA = chan;
+
+  // clear done bit
+  AD1CON1bits.DONE = 0; 
+
+  // enable auto-sampling
+  AD1CON1bits.ASAM = 1; 
+
+  // sample and wait for conversion
+  while (!AD1CON1bits.DONE);  
+
+  // end auto-sampling
+  AD1CON1bits.ASAM = 0; 
+
+  // read result and return
+  return ADC1BUF0;
+}
+
+void calibrate()        //     with this method we dont need the extra 34 addition it gives the same result
+{						//     if we can work this out then we can use the other channel for accelerometer 
+	__delay_ms(100);
+	for ( i=1 ; i<=512; i++) // determine initial value for bias of gyro
+	{ __delay_ms(1);
+		temp1=read_adc(0);
+		acc_bias= acc_bias+temp1;
+        temp2=read_adc(1);
+		gyro_bias = gyro_bias +temp2;
+	}
+	acc_bias=acc_bias>>9;
+	gyro_bias=gyro_bias>>9;
+}
+
+int rtos_scheduler()
+{
+  // REQUIRED: Implement prioritization to 8 levels
+  static int ok;
+  static int task = 0xFF;
+  ok = FALSE;
+  while (!ok)
+  {
+    task++;
+    if (task >= MAX_TASKS)
+      task = 0;
+    ok = (tcb[task].state == STATE_READY);
+  }
+  return task;
+}
+
+int create_process(_fn fn, int priority)
+{
+  int ok = FALSE;
+  int i = 0, k = 4;
+  int found = FALSE;
+  //IEC0bits.T2IE = 0;
+  T3IE = 0; 
+  // save starting address if room in task list
+  if (task_count < MAX_TASKS)
+  {
+    // make sure fn not already in list (prevent reentrancy)
+    while (!found && (i < MAX_TASKS))
+    {
+      found = (tcb[i++].pid == (unsigned int) fn);
+    }
+    if (!found)
+    {
+      // find first available tcb record
+      i = 0;
+      while (tcb[i].state != STATE_INVALID) {i++;}
+      // REQUIRED: seed the stack with initial values to look like task has already run
+      stack[i][0] = ((unsigned int) fn); //Low Byte
+	  stack[i][1] = ((unsigned int) fn>>16); //High Byte
+	  while(k < 256)
+	  {
+		stack[i][k] = 0;// Seeding value of 0 from stack[i][4] through stack[i][256];
+		k++;
+	  }
+	  stack[i][9] = &stack[i][3];
+	  tcb[i].state = STATE_READY;
+      tcb[i].pid = (unsigned int) fn;
+      // REQUIRED: set the original SP pointer location (depends on init above)
+      tcb[i].sp = &stack[i][10]; // add offset as needed
+      tcb[i].priority = priority;    
+      tcb[i].current_priority = priority;    
+      // increment task count
+      task_count++;
+      ok = TRUE;
+    }
+  }
+  //IEC0bits.T2IE = 1;
+  T3IE = 1;
+  return ok;
+}
+
+void rtos_start()
+{
+  
+  int *SP = (int*)0x1E;
+  task_current = rtos_scheduler();
+  *SP = tcb[task_current].sp;
+  // REQUIRED: continue the startup of the first process
+  asm("pop w14");
+  asm("pop w13");
+  asm("pop w12");
+  asm("pop w11");
+  asm("pop w10");
+  asm("pop w9");
+  asm("pop w8");
+  asm("pop w7");
+  asm("pop w6");
+  U2STAbits.OERR = 0;
+}
+
+void init(void* p, int count)
+{
+  s = p;
+  s->count = count;  
+  s->queue_size = 0;
+}
+
+// REQUIRED: modify this function to yield execution back to scheduler
+void yield()
+{
+	asm("push w6");
+	asm("push w7");
+	asm("push w8");
+	asm("push w9");
+	asm("push w10");
+	asm("push w11");
+	asm("push w12");
+	asm("push w13");
+	asm("push w14");
+	tcb[task_current].sp = *SP;
+	task_current = rtos_scheduler();
+	*SP = tcb[task_current].sp;
+	asm("pop w14");
+	asm("pop w13");
+	asm("pop w12");
+	asm("pop w11");
+	asm("pop w10");
+	asm("pop w9");
+	asm("pop w8");
+	asm("pop w7");
+	asm("pop w6");	
+}
+
+// REQUIRED: modify this function to support 1ms system timer
+// execution yielded back to scheduler until time elapses
+void sleep(unsigned int tick)
+{
+tcb[task_current].state = STATE_DELAYED;
+tcb[task_current].ticks = (unsigned int) tick;
+yield();
+}
+
+// REQUIRED: modify this function to wait a semaphore with priority inheritance 
+// return if avail, else yield to scheduler
+void wait(struct semaphore* p)
+{
+	if(p->count > 0)
+	{
+		p->count--;
+	}
+	else
+	{
+		tcb[task_current].state = STATE_BLOCKED;
+		p->process_queue[p->queue_size++] = task_current;
+		yield();
+	}
+}
+
+// REQUIRED: modify this function to signal a semaphore is available
+void signal(struct semaphore* p)
+{
+int top=0;
+	p->count++;
+	//if(p->count == 1)
+	//{
+		if(p->queue_size > 0)
+		{
+			top = p->process_queue[0];
+			tcb[top].state = STATE_READY;
+			for(top = 0; top < p->queue_size; top++)
+			{
+				p->process_queue[top] = p->process_queue[top + 1];
+			}
+			p->count--;
+			p->queue_size--;
+		}
+	//}	
+}
+
+//NAVIGATION FUNCTIONS
+void rotation(int theta, int dir)
+{
+  
+  Angle = theta;
+  rotate_grant_flag = 0;
+  rotate_receive_flag = 0;
+  rotate_rover_flag = 1;
+  Strips = (theta*0.13494);  //Theta should be loaded
+  count_stripsL=0;
+  count_stripsR=0;                           
+  PR4 = Strips ;
+  PR5 = Strips ;
+  if(dir== 1)
+  {
+	LEFTDIR = 1;
+	RIGHTDIR = 1;
+	pwm_setdc_left(0X103);//	OC1RS = 0x3FF;                             //Left Wheel
+	pwm_setdc_right(0X105);//OC2RS = 0x3FF;                             //Right Wheel
+  }
+
+  else if((dir==0))
+  {
+	LEFTDIR = 0;
+	RIGHTDIR = 0; 
+  	pwm_setdc_left(0X315);//	OC1RS = 767;                             //Left Wheel
+	pwm_setdc_right(0X278);//OC2RS = 639;       0x285                      //Right Wheel 
+  }   
+  nav.rover_status=MOVING;
+  flag_mode=0;
+}
+
+void drive_straight(int distance)
+{
+  rotate_rover_flag = 0;
+  translate_flag = 1;
+  PR4 = 1;
+  PR5 = 1;
+  left_count=0;
+  right_count=0;
+  //setting the directions of the wheels in the main//one direction
+  RIGHTDIR = 0; //R   
+  LEFTDIR = 1; //L
+  dist_stripe=0;
+  total_stripe = distance/dist_bt_strips;//nav.distance/dist_bt_strips;//Xset/dist_bt_strips;   
+  flag_mode = 1;
+}
+
+void update_CurrentLoc(int x, int y, int phi)				//Gets the message from the localization team
+{   
+  nav.current_x = x;
+  nav.current_y = y;
+  nav.current_phi = phi;
+}
+
+void update_DesiredLoc(int x, int y)						//Gets the message from the base station
+{
+  nav.des_x = x;
+  nav.des_y = y;
+}
+
+int location_reached()
+{
+  if((nav.current_x==nav.des_x)&&(nav.current_y==nav.des_y))
+  return 1;
+  else return 0;
+}
+
+int chk_case()
+{  
+  if( (nav.des_x>nav.current_x)&&(nav.des_y>=nav.current_y) )
+   return 1;
+  if( (nav.des_x<nav.current_x)&&(nav.des_y>=nav.current_y) )
+   return 2;
+  if( (nav.des_x<nav.current_x)&&(nav.des_y<nav.current_y) )
+   return 3;
+  if( (nav.des_x>nav.current_x)&&(nav.des_y<nav.current_y) )
+   return 4;
+  if( (nav.des_x==nav.current_x)&&(nav.des_y>nav.current_y) )
+   return 5;
+  else//( (nav.des_x==nav.current_x)&&(nav.des_y<nav.current_y) )
+   return 6;
+}
+
+void calc_err_theta()
+{
+  float x,y;
+  casechk=chk_case();
+
+  num=nav.des_y-nav.current_y;
+  if(num<0)
+  num=(-1)*num;
+  denom=nav.des_x-nav.current_x;
+  if(denom<0)
+  denom=(-1)*denom;
+  x=(float)num;
+  y=(float)denom;
+
+
+    if((casechk==1)) 
+  {
+  	theta=atan(x/y);
+	phitemp=((pi/2)-theta);
+	phitemp=phitemp*180/pi;
+	phi=(int)phitemp;
+	nav.err_theta=phi-nav.current_phi;
+  }
+
+  if(casechk==4) 
+  {
+	theta=atan(x/y);
+	phitemp=((pi/2)+theta);
+	phitemp=phitemp*180/pi;
+	phi=(int)phitemp;
+	nav.err_theta=phi-nav.current_phi;
+  }
+  
+  else if(casechk==2) 
+  {
+	theta=atan(x/y);
+	phitemp=(-1)*((pi/2)-theta);
+	phitemp=phitemp*180/pi;
+	phi=(int)phitemp;
+	nav.err_theta=phi-nav.current_phi;
+  }  
+
+  else if (casechk==3) 
+  {
+	theta=atan(x/y);
+	phitemp=(-1)*((pi/2)+theta);
+	phitemp=phitemp*180/pi;
+	phi=(int)phitemp;
+	nav.err_theta=phi-nav.current_phi;
+  }
+
+  else if(casechk==5) 
+  {
+	nav.err_theta=(-1)*nav.current_phi;
+  }
+
+  else if(casechk==6) 
+  {
+	nav.err_theta=180-nav.current_phi;
+  }
+}
+
+void navigation()
+{
+  int chk;
+  long int a1,a2,b1,b2;
+  rotate_receive_flag = 1;
+  chk=location_reached();
+  if(chk)
+  return;
+
+  calc_err_theta();
+  
+ 
+  a1=nav.des_x;
+  a2=nav.current_x;
+  b1=nav.des_y;
+  b2=nav.current_y;
+
+  nav.distance=sqrt( ( (a1-a2)*(a1-a2) ) + ( (b1-b2)*(b1-b2) ) );
+  motion_to_comm.current_distance = nav.distance;
+
+//  if(phi<0)
+//  phi=360- phi;
+//  nav.current_phi = phi;
+//
+  if(nav.err_theta>0) 
+  {
+  	flag=0;
+  	nav.angle_correction=360-nav.err_theta;
+  	//rotation(nav.err_theta,clkwise);     ///  not rotating clockwise
+	while(!(rotate_grant_flag == 1))
+	{
+		yield();
+  	}	
+	rotate_rover_flag = 1;
+	rotation(nav.angle_correction,cclkwise);   ///  since clkwise not working turn cclkwise by 360-angle
+	while(!flag)
+  	yield();
+	rotate_rover_flag = 0;
+  	drive_straight(nav.distance);
+  	//while ((flag)&&!(err_cmd.stoprover))
+  	yield();
+  }
+
+  else if(nav.err_theta<0) 
+  {
+  	int signtheta=(-1)*nav.err_theta;
+  	flag=0;
+
+	rotate_receive_flag = 1;
+	while(!(rotate_grant_flag == 1))
+	{
+		yield();
+  	}    
+  	rotation(signtheta,cclkwise);
+  	while(!flag)
+  	yield();
+	rotate_rover_flag = 0;
+  	drive_straight(nav.distance);
+  	while ((flag))
+  	yield(); 
+  }
+
+  else if(nav.err_theta==0)
+  {
+	rotate_rover_flag = 0;
+  	drive_straight(nav.distance);
+	while ((flag))
+	yield();
+  }
+}
+ 
+void goto_position(int x, int y) 
+{
+	update_CurrentLoc(fx_rover_x,fx_rover_y,fx_phi);//(fx_rover_x,fx_rover_y,fx_phi); //(int x, int y, float phi);	
+	update_DesiredLoc(x,y);		//(4,5);
+	navigation();
+	//motion_to_comm.current_x = comm_to_motion.x1;
+	//motion_to_comm.current_y = comm_to_motion.y1;
+	//motion_to_comm
+}
+
+//For Triangulation
+void direction(unsigned int dir)
+{
+	if(dir == CLKWISE)
+	{
+		RPOR4bits.RP9R = 0;
+		// Motor Control Clockwise
+		RPOR4bits.RP8R = 20;										// connect OC3 to RP8 (PWM)
+		LATBbits.LATB9 = 0;											// write 0 to DIR pin
+		TRISBbits.TRISB9 = 0;										// make DIR pin an output
+		dir_flag = CLKWISE;
+	}
+	else if(dir == ANTICLKWISE)
+	{
+		RPOR4bits.RP8R = 0;
+		RPOR4bits.RP9R = 20;										// connect OC3 to RP9 (PWM)
+		LATBbits.LATB8 = 0;											// write 0 to DIR pin
+		TRISBbits.TRISB8 = 0;										// make DIR pin an output
+		dir_flag = ANTICLKWISE;
+	}
+}
+
+//triangulation fix task
+void fix_triang1()
+{
+  fx_rx =	100; fx_ry = 140 ;
+	fx_gx = 20; fx_gy = 70;
+	fx_bx = 100;  fx_by = 0;
+	//fx_rx =	 beacon_info.x1; fx_ry = beacon_info.y1;
+	//fx_gx =	 beacon_info.x2; fx_gy = beacon_info.y2;
+//	fx_bx =	 beacon_info.x3; fx_by = beacon_info.y3;
+//	//the counts are assigned as below:
+	fx_cnt_inr = r;
+	fx_cnt_ing = g;
+	fx_cnt_inb = b;
+	////The angles calculated from the count input in radians
+	if ( ((fx_cnt_inr < fx_cnt_ing) && (fx_cnt_ing < fx_cnt_inb)) || ((fx_cnt_inb < fx_cnt_ing) && (fx_cnt_ing < fx_cnt_inr)) )
+	{
+		fx_ang_gxr = (((fabs(fx_cnt_inr-fx_cnt_ing))*2*pi)/512);
+		fx_ang_bxg = (((fabs(fx_cnt_ing-fx_cnt_inb))*2*pi)/512);
+		fx_ang_rxb = ((2*pi)-(fx_ang_gxr+fx_ang_bxg));
+	}
+	else if ( ((fx_cnt_ing < fx_cnt_inb) && (fx_cnt_inb < fx_cnt_inr)) || ((fx_cnt_inr < fx_cnt_inb) && (fx_cnt_inb < fx_cnt_ing)) )
+	{
+		fx_ang_bxg = (((fabs(fx_cnt_ing-fx_cnt_inb))*2*pi)/512);
+		fx_ang_rxb = (((fabs(fx_cnt_inr-fx_cnt_inb))*2*pi)/512);
+		fx_ang_gxr = ((2*pi)-(fx_ang_rxb+fx_ang_bxg));
+	}
+	else if ( ((fx_cnt_inb < fx_cnt_inr) && (fx_cnt_inr < fx_cnt_ing)) ||  ((fx_cnt_ing < fx_cnt_inr) && (fx_cnt_inr < fx_cnt_inb)) )
+	{
+		fx_ang_rxb = (((fabs(fx_cnt_inr-fx_cnt_inb))*2*pi)/512);
+		fx_ang_gxr = (((fabs(fx_cnt_inr-fx_cnt_ing))*2*pi)/512);
+		fx_ang_bxg = ((2*pi)-(fx_ang_gxr+fx_ang_rxb));
+	}
+
+// Calculation of distance between the beacons
+	fx_rg = sqrt(((fx_rx - fx_gx)*(fx_rx - fx_gx))  + ((fx_ry - fx_gy)*(fx_ry - fx_gy)));
+	fx_bg = sqrt(((fx_bx - fx_gx)*(fx_bx - fx_gx))  + ((fx_by - fx_gy)*(fx_by - fx_gy)));
+	fx_rb = sqrt(((fx_rx - fx_bx)*(fx_rx - fx_bx))  + ((fx_ry - fx_by)*(fx_ry - fx_by)));
+    //calculation of angles between beacons
+	yield();
+
+	fx_ang_rbg = acos(((fx_rb*fx_rb) + (fx_bg*fx_bg) - (fx_rg* fx_rg)) / (2*fx_bg*fx_rb));
+	//fx_ang_bgr = acos(((fx_rg*fx_rg) + ((fx_bg*fx_bg)) - ((fx_rb*fx_rb))) / (2*fx_bg*fx_rg));
+	//fx_ang_grb = acos(((fx_rg*fx_rg) + ((fx_rb*fx_rb)) - ((fx_bg*fx_bg))) / (2*fx_rb*fx_rg));
+	yield();
+
+	fx_temp1 = ((sin(fx_ang_rxb)) / fx_rb);
+	yield();
+	fx_temp2 = ((sin(fx_ang_bxg)) / fx_bg);
+	yield();
+
+	fx_alpha = fx_ang_rxb + fx_ang_rbg;
+	fx_beta = fx_ang_bxg;
+    yield();
+    fx_sine_alpha =sin(fx_alpha);
+    fx_sine_beta =sin(fx_beta);
+    yield();
+    fx_cos_alpha =cos(fx_alpha);
+    fx_cos_beta = cos(fx_beta);
+    yield();
+
+	fx_temp12 = ((fx_temp1)/(fx_temp2));
+	yield();
+	fx_temp_y=((fx_sine_alpha)-((fx_sine_beta)*(fx_temp12)));
+	yield();
+    fx_temp_x=((fx_cos_alpha)+((fx_cos_beta)*(fx_temp12)));
+    yield();
+    fx_ang_xbg = atan((fx_temp_y) /(fx_temp_x ));
+	yield();
+    fx_ang_rbx = fx_ang_rbg - fx_ang_xbg;
+	fx_ang_xgb = pi - fx_ang_xbg - fx_ang_bxg;
+    yield();
+	fx_xg = sin(fx_ang_xbg)/fx_temp2;
+
+	fx_xr = sin(fx_ang_rbx)/fx_temp1;
+
+	fx_xb = sin(fx_ang_xgb)/fx_temp2;
+	yield();
+	//matrix operatioin
+	A11 = 2*(fx_rx - fx_gx); A12 = 2*(fx_ry - fx_gy); A21 = 2*(fx_rx - fx_bx);    A22 = 2*(fx_ry - fx_by);
+	B1 = (((fx_xg*fx_xg)) - ((fx_xr*fx_xr))) + (((fx_rx*fx_rx)) + ((fx_ry*fx_ry))) - (((fx_gx*fx_gx)) + ((fx_gy*fx_gy)));
+	B2 = (((fx_xb*fx_xb)) - ((fx_xr*fx_xr))) + (((fx_rx*fx_rx)) + ((fx_ry*fx_ry))) - (((fx_bx*fx_bx)) + ((fx_by*fx_by)));
+	fx_temp4=(A22*B1)-(A12*B2);
+	fx_temp5=(A11*B2)-(A21*B1);
+	fx_temp6=(A22*A11)-(A12*A21);
+	fx_rover_x = (fx_temp4/fx_temp6); fx_rover_y = (fx_temp5/fx_temp6);
+
+	fx_p = fx_bx;
+	fx_q = fx_by;
+	fx_beaconheadangle = fabs(fx_cnt_inb)*(360/512);
+
+	fx_newp = fx_p - fx_rover_x;
+	fx_newq = fx_q - fx_rover_y;
+
+	fx_arctan = atan2((fx_newq),(fx_newp));
+	yield();
+	fx_arctan = fx_arctan*(57);
+
+	fx_phi1 = 90+fx_beaconheadangle-fx_arctan;
+
+
+	if(fx_phi1<0)
+		fx_phi1 = 360-(fabs(fx_phi1));
+	if(fx_phi1>360)
+		fx_phi1 = fx_phi1-360;
+	if(215<fx_phi1<360)
+		fx_phi = fx_phi1-215;
+	else if(0<fx_phi1<215)
+		fx_phi = fx_phi1+145;
+
+	ulink_triang->x_tri=fx_rover_x;
+	motion_to_comm.x_tri = fx_rover_x;
+	ulink_triang->y_tri=fx_rover_y;	
+	motion_to_comm.y_tri = fx_rover_y;
+	ulink_triang->phi_degree_tri=fx_phi;
+	motion_to_comm.phi_tri = fx_phi;
+
+	yield();
+} 
+
+
+//---------------------------------------------ALL INTERRUPTS--------------------------------------------
+//-------------------------------------------------------------------------------------------------------
+
+void __attribute__ ((interrupt, no_auto_psv)) _CNInterrupt(void)
+{
+	IFS1bits.CNIF = 0;
+	
+	//Index Sensor
+ 	if (PORTBbits.RB13)
+	{
+		if(skip_count > 0)
+			skip_count--;
+		else 
+			skip_count = 0;
+		qe_count = 0;
+	}	
+
+ 	if(!PORTBbits.RB10)
+	{
+		beacon = 1;
+	}
+	else if(!PORTBbits.RB11)
+	{
+		beacon = 2;
+	}
+	else if(!PORTBbits.RB12)
+	{
+		beacon = 3;
+	}
+
+
+	if(PORTBbits.RB10 && flag_r)
+	{
+		r2 = qe_count;
+		flag_r=0;
+		r = (r1+r2)/2;
+		if(rotate_receive_flag)
+		{
+			Rcount1c = r1;
+			Rcount2c = r2;
+		}
+	}
+	else if(PORTBbits.RB11 && flag_g)
+	{
+		g2 = qe_count;
+		flag_g=0;
+		g = (g1+g2)/2;
+		if(rotate_receive_flag)
+		{
+			Rcount1c = g1;
+			Rcount2c = g2;
+		}
+	}
+	else if(PORTBbits.RB12 && flag_b)
+	{
+		b2 = qe_count;
+		flag_b=0;
+		b = (b1+b2)/2;
+		if(rotate_receive_flag)
+		{
+			Rcount1c = b1;
+			Rcount2c = b2;
+		}
+		if(command.received==1 || rotate_receive_flag == 1)
+		{
+			beacon_found = 1;
+			signal(&beacon_risingedge);
+		}
+	}
+}
+
+void __attribute__((interrupt, no_auto_psv)) _INT1Interrupt (void)
+{
+	IFS1bits.INT1IF = 0;
+	//char str[10];
+	if (INTCON2bits.INT1EP)
+	{
+	if (PORTBbits.RB14)
+			qe_count++;
+		else
+			qe_count--;
+		INTCON2bits.INT1EP = 0;
+	}
+	else
+	{
+		if (PORTBbits.RB14)
+			qe_count--;
+		else
+			qe_count++;
+		INTCON2bits.INT1EP = 1;
+	}
+}
+
+void __attribute__((interrupt, no_auto_psv)) _T2Interrupt (void)
+{
+  //Timer is set for every 10ms
+  IFS0bits.T2IF = 0;					//Timer flag is made 0
+  if(flag_mode == 1)
+  {
+	logic_en++;
+	//Calculation of a fixed distance
+  	if(dist_stripe == total_stripe)
+  	{
+		if(LEFTDIR == 1 || RIGHTDIR == 1)
+		{ 
+    		LEFTDIR = 0;                        //LEFT Wheel
+			RIGHTDIR = 0;                        //RIGHT Wheel
+		}
+	   	pwm_setdc_left(0);
+       	pwm_setdc_right(0);
+		translate_flag = 1;
+		//flag_mode= 2;
+        nav.rover_status=STOPPED;
+        command.received = 0;
+		//signal(&key_released);
+  	}
+  	else
+  	{ 
+  	   //Open loop straight
+		pwm_setdc_left(190-(alpha_l));//1000
+		pwm_setdc_right(935+(alpha_r));//650 //963
+  	}
+		logic_en = 0;
+		error = left_count-right_count;
+  		if(error>1)
+  		{
+			alpha_l = (-alpha*error);
+			alpha_r = +alpha*error; 
+    		left_count = 0;
+    		right_count=0;
+		    error=0;
+  		}
+  		else if (error<-1)
+  		{
+    		alpha_l = (+alpha*-error);
+			alpha_r = (alpha*error); 
+    		left_count = 0;
+    		right_count=0;
+			error=0;
+  		}
+  }  
+}
+
+// REQUIRED: Add code to manage blocked processes awaiting sleep() completion
+void __attribute__((interrupt, no_auto_psv)) _T3Interrupt (void)
+{
+	T3IF = 0;
+	int i = 0;
+	while(i < task_count) // Check if the task is delayed and decrement ticks if so
+	{
+		if(tcb[i].state == STATE_DELAYED);
+		{
+			tcb[i].ticks--;
+			if(tcb[i].ticks == 0)
+			{
+				tcb[i].state = STATE_READY;
+			}
+		}
+		i++;
+	}
+	if(ticks ==100)
+	{
+		sum_temp1/=ticks;
+	   	sum_temp2/=ticks;
+		tilt = (sum_temp1*189);    //    R*(3300/1024)*(1/1000)*(180/pi);   
+		tilt=tilt>>12;
+	
+		yawrate = (sum_temp2*3300)/15;
+		yawrate=(yawrate>>12);
+        yaw+=(yawrate*3)/20;               //  delta_T = 100 ms -->  1/10 s  and calibrating it by multiplying by 1.5=3/2
+				
+		if(yaw<0)
+        {
+         	if(yaw<=-360)
+          	{
+          		 yaw=0;
+          	}
+         	else
+          	{
+            	yaw=yaw+360;
+          	} 
+        }
+        else
+		{ 
+        	 if(yaw>=360)
+		  		yaw=yaw%360;
+		}
+		motion_to_comm.yaw = yaw;
+		motion_to_comm.tilt = tilt;
+		//motion_to_comm.phi_tri = yaw;
+		ticks=0;
+		sum_temp1=0;
+    	sum_temp2=0;
+	}
+	else 
+	{
+		temp1=read_adc(0);
+		//sum_temp+=temp2-temp1+34;
+		sum_temp1+=temp1-acc_bias;
+	    temp2=read_adc(1);
+		sum_temp2+=temp2-gyro_bias;   ///      here instead of using the 2.5 V conversion, we are using 'bias' that came from calibrate_gyro 
+		ticks++;
+    }
+}
+
+void __attribute__((interrupt, no_auto_psv))_T4Interrupt(void)
+{
+  TMR4 = 0;
+  //T4CONbits.TON = 0;
+  IFS1bits.T4IF = 0;                     
+  if(flag_mode == 0)
+  {
+	flag=1;
+  	LATAbits.LATA3 = 0; 			//LEFT Wheel
+  	OC1RS = 0;
+	rotate_rover_flag = 0;
+  }
+  else if(flag_mode == 1)
+  {
+	TMR4 = 0;
+	left_count++;
+  }
+}
+
+void __attribute__((interrupt, no_auto_psv))_T5Interrupt(void)
+{
+  TMR5 = 0;
+  IFS1bits.T5IF = 0;
+  if(flag_mode == 0)
+  {
+	flag=1;
+	rotate_rover_flag = 0;
+  	LATAbits.LATA4 = 0; 
+  	OC2RS = 0;
+  }
+  else if(flag_mode == 1)
+  {
+	TMR5 = 0;
+	right_count++;
+	dist_stripe++;									//Counts the no of strips
+  }
+}
+
+//-----------------------------------------------------------------------------
+// Subroutines                
+//-----------------------------------------------------------------------------
+
+// Initialize Hardware
+void init_hw()
+{
+  PLLFBDbits.PLLDIV = 38;                    // pll feedback divider = 40;
+  CLKDIVbits.PLLPRE = 0;                     // pll pre divider = 2
+  CLKDIVbits.PLLPOST = 0;                    // pll post divider = 2
+
+
+  // H-bridge and stepper outputs
+  RPOR1bits.RP3R = 19;                        // connect to PWM //L
+  RPOR1bits.RP2R = 18;                        // connect to PWM //R
+  
+  LATAbits.LATA3 = 0;                        // write 0 to DIR pin
+  TRISAbits.TRISA3 = 0;                      // make DIR pin an output  //R
+
+  LATAbits.LATA4 = 0;                        // write 0 to DIR pin
+  TRISAbits.TRISA4 = 0;                      // make DIR pin an output  //L 
+  
+  //Put the distance sensor as timer source
+  RPINR4bits.T5CKR = 5; //R 
+  RPINR4bits.T4CKR = 4;   //L
+
+  //Enable Change notification interrupt on RB10, RB11, RB12 and RB13
+  CNEN1bits.CN13IE = 1; 
+  CNEN1bits.CN14IE = 1;
+  CNEN1bits.CN15IE = 1;
+  CNEN2bits.CN16IE = 1;
+
+  //Change Notification Interrupt
+  IEC1bits.CNIE = 1; 											// Enable CN interrupts
+  IFS1bits.CNIF = 0; 											// Reset CN interrupt flag
+
+  RPINR19bits.U2RXR = 7;	//RS-232
+  RPOR3bits.RP6R = 5;
+	
+  //Quadrature Encoder Interrupt
+  RPINR0bits.INT1R = 15;	
+}
+
+void qe_init_triangulation()
+{
+  qe_count = 0;												// Zero count
+  IEC1bits.INT1IE = 1;										// Enable int 1 interrupts for quadrature sensor
+}
+
+// ------------------------------------------------------------------------------
+//  Task functions
+// ------------------------------------------------------------------------------
+
+// one task must be ready at all times or the scheduler will fail
+// the idle task is implemented for this purpose
+
+void idle()
+{
+  while(TRUE) 
+  { 
+    yield();
+  }
+}
+
+void detect(void)
+{
+	while(1)
+	{
+	//serial_puts("hello");
+	switch(beacon)
+	{
+		case 1:
+				pwm_setdc_triangulation(0x000);		
+				sleep(25);
+				if(!PORTBbits.RB10)
+				{
+					sleep(25);
+					if(!PORTBbits.RB10)
+					{
+						r1 = qe_count;
+						flag_r=1;
+					}
+				}
+				beacon = 0;
+				if(flag_speed == 1)
+					pwm_setdc_triangulation(speed);
+				break;
+		case 2:
+					pwm_setdc_triangulation(0x000);	
+					sleep(25);
+					if(!PORTBbits.RB11)
+					{
+						sleep(25);
+						if(!PORTBbits.RB11)
+						{
+							g1 = qe_count;
+							flag_g=1;
+						}
+					}
+					if(flag_speed == 1)
+						pwm_setdc_triangulation(speed);
+					beacon = 0;
+					break;
+		case 3:
+					pwm_setdc_triangulation(0x000);	
+					sleep(25);
+					if(!PORTBbits.RB12)
+					{
+						sleep(25);
+						if(!PORTBbits.RB12)
+						{
+							b1 = qe_count;
+							flag_b=1;
+							if(command.received==1 || rotate_receive_flag == 1)
+							{
+								beacon_found = 2;
+								signal(&beacon_fallingedge);
+							}
+						}
+					}
+					if(flag_speed == 1)
+						pwm_setdc_triangulation(speed);
+					beacon = 0;
+					break;
+		beacon = 0;		
+	}
+	if((r!=0)&&(g!=0)&&(b!=0))//&&rotate_receive_flag==0&&translate_flag==0)
+	fix_triang1();
+	yield();
+}
+}
+
+void track(void)
+{ 
+while(TRUE)
+{
+	while((rotate_rover_flag==1)||(command.received==1))//&&(translate_flag==0) )	// if rotate command has been received
+	{
+		if(rover_dir_flag)// check direction of rover rotation
+		{
+			wait(&beacon_risingedge);
+			if(beacon_found == 1)// spot a beacon
+			{   
+				//while(flag_beacon);
+				pwm_setdc_triangulation(0x0);		// stop rotation of motor
+				flag_speed = 0;
+				sensor_buf1_count=Rcount2c;
+				rotate_grant_flag=1;
+				if(dir_flag == CLKWISE)
+					direction(ANTICLKWISE);
+				else if(dir_flag == ANTICLKWISE)
+					direction(CLKWISE);
+
+				while(rotate_rover_flag)
+				{
+					sleep(1000);
+					pwm_setdc_triangulation(speed); 
+					flag_speed = 1;
+					while(beacon_found != 2)
+					{
+						wait(&beacon_fallingedge);
+					}
+    				pwm_setdc_triangulation(0x0);
+					flag_speed = 0;
+				}
+			}
+				sensor_buf2_count=qe_count;
+				rotate_rover_angle= (sensor_buf1_count-sensor_buf2_count)/512*360;
+				ulink_triang-> delphi_degree_tri=rotate_rover_angle;
+		}
+			if(!rover_dir_flag)// check direction of rover rotation anticlockwise
+			{	
+				wait(&beacon_risingedge);
+				if(beacon_found == 1)
+				{ 
+					pwm_setdc_triangulation(0x0);	// stop rotation of motor
+					flag_speed = 0;
+					sensor_buf1_count=Rcount1c;
+					rotate_grant_flag=1;
+					if(dir_flag == CLKWISE)
+						direction(ANTICLKWISE);
+					else if(dir_flag == ANTICLKWISE)
+						direction(CLKWISE);
+					while(rotate_rover_flag)
+					{
+						sleep(1000);
+						pwm_setdc_triangulation(speed); 
+						flag_speed = 1;
+						while(beacon_found != 2)
+						{
+							wait(&beacon_fallingedge);
+						}
+    					pwm_setdc_triangulation(0x0);
+						flag_speed = 0;
+					}	
+				}
+				sensor_buf2_count=qe_count;
+				rotate_rover_angle= (sensor_buf1_count-sensor_buf2_count)/512*360;
+				ulink_triang-> delphi_degree_tri=rotate_rover_angle;
+			}
+	}
+	pwm_setdc_triangulation(speed);
+	flag_speed = 1;
+	yield();
+
+ }
+}
+
+void motioncontrol()
+{
+  while(TRUE)
+  {		
+	if(command.received == 1)// //if(1)//if(1)//
+	{
+		if(1)  //if(command.cmd == 1)//
+		{
+			goto_position(comm_to_motion.x,comm_to_motion.y); //(4,5);//
+			command.received = 0;
+		}
+//		else if (0) //else if(command.received == 2)
+//		{
+//			searchgrid();
+//		}
+	}
+	yield();
+  }
+}
+
+//void navigationerror()
+//{
+//  while(TRUE)
+//  {
+//	wait(&rotation_count);
+//	if(nav.err_theta != 0)
+//	{
+//		goto_position(nav.des_x, nav.des_y);
+//		sleep(4000);
+//	}
+//  }
+//}
+
+
+//-----------------------------------------------------------------------------
+// Main                
+//-----------------------------------------------------------------------------
+
+int main(void)
+{
+  int ok;
+
+  // initialize hardware
+  adc_init();
+  calibrate();  ///   this reads the gyro initially for 256 mseconds and averages the readings for zero bias
+  init_hw();  
+  timer_init();
+  pwm_init();  
+  qe_init_triangulation();						//Turn On Quadrature Sensor
+  pwm_setdc_triangulation(speed);
+  direction(ANTICLKWISE);  
+  rover_dir_flag = ANTICLKWISE;
+  CRC_Init();
+  serial_init_gp(BAUD_115200);
+	
+  // init semaphores
+  init(&key_pressed, 0);
+  init(&key_released, 0);
+    init(&rotation_complete, 1);
+  init(&beacon_fallingedge, 0);
+  init(&beacon_risingedge, 0);
+
+  // initialize selected RTOS
+  ok = FALSE;
+  while (!ok)
+  {
+      ok = TRUE;
+      rtos_init(MODE_COOPERATIVE);
+  }
+
+  // add required idle process
+  ok =  create_process(idle, 0) >= 0;
+
+  // add other processes
+ ok &= create_process(access, 7) >= 0;
+ ok &= create_process(process_tx_data, 7) >= 0;
+ ok &= create_process(process_rx_data, 7) >= 0;
+ ok =  create_process(detect, 7) >= 0;
+ ok =  create_process(track, 7) >= 0;
+ ok &= create_process(motioncontrol, 7) >= 0;
+
+  // start up rtos
+  if (ok) 
+    rtos_start(); // never returns
+  //else
+    //PIN_RED = 1;
+
+  return 0;
+  // don't delete this unreachable code
+  // if a function is only called once in your code, it will be
+  // accessed with two goto instructions instead of call-return,
+  // so any stack-based code will not function correctly
+  yield(); sleep(0); wait(0); signal(0);
+}
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------
+
+#define U2RXIF IFS1bits.U2RXIF
+#define U2RXIP IPC7bits.U2RXIP
+#define U2RXIE IEC1bits.U2RXIE
+#define U2TXIF IFS1bits.U2TXIF
+#define U2TXIP IPC7bits.U2TXIP
+#define U2TXIE IEC1bits.U2TXIE
+#define BAUD_115200 21
+
+enum state_type_1			//Enumeration of states
+{
+	wait_for_address = 0,	//Waiting for start byte
+	wait_for_data,			//Waiting for data bytes
+	sb_wait_1,				//Address byte received, waiting for next byte
+	sb_wait_2				//Stop byte received, waiting for next byte
+};
+
+enum state_type_1 RX_STATE = wait_for_address;	//Declare state
+
+unsigned char slot_num = 0;		//Current slot number (0-9)
+int sync_locked = 0;			//Sync signal is being received
+int sync_timeout = 0;			//Sync has stopped being recieve = 1
+int access_granted = 0;			//Access has been granted
+int waiting_for_access = 0;		//Waiting for access response
+int request_access = 0;			//Set bit to get comm section to transmit access request
+int access_requested = 0;
+unsigned char my_slot_num = 0;	//Slot number assigned to rover
+int status_info_sent = 0;		//Status info has been transmitted
+
+unsigned char rx_wr_index = 0, rx_rd_index = 0;		//Receive buffer pointers
+__attribute__((far)) unsigned char rx_buffer[256];	//Receive buffer
+unsigned char tx_wr_index = 0, tx_rd_index = 0;		//Transmit buffer pointers
+__attribute__((far)) unsigned char tx_buffer[256];	//Transmit buffer
+int crc_buffer_index = 0;							
+__attribute__((far)) int crc_buffer[20];			//crc buffer
+
+#define RX_BUFFER_EMPTY rx_wr_index == rx_rd_index
+#define TX_BUFFER_EMPTY (tx_wr_index == tx_rd_index)
+#define TX_BUFFER_FULL ((tx_wr_index + 1) == tx_rd_index)
+
+#define TEMP_FRAME_WIDTH 40
+#define NUM_FRAMES 2
+unsigned char temp_frame[NUM_FRAMES][TEMP_FRAME_WIDTH];	//Array used to store a frame being parsed
+unsigned char temp_tx_frame[TEMP_FRAME_WIDTH];
+int temp_tx_frame_index = 0;
+int temp_frame_index[NUM_FRAMES] = {0,0};	//Pointers
+int frame_complete = 0;						//Indicates a full frame has been received
+
+enum frame_status_type	//Status of tx frame
+{
+	INCOMPLETE,
+	RECEIVED,
+	CRC_GOOD
+};
+
+enum frame_status_type FRAME_STATUS = INCOMPLETE;	//Declare frame status variable
+
+#define START_BYTE 0xA5		//Start byte
+#define STOP_BYTE 0xC3		//Stop byte
+#define SYNC 0x80			//Slot = 8, Type = 0
+#define MAC 0x23			//MAC address
+#define ACCESS_REQ 0x92		//Slot = 9, Type = 2
+#define ACCESS_RESP 0x73	//Slot = 7, Type = 3
+#define BROADCAST 1			//Broadcast is type 1
+#define INFO 4				//Info is type 4
+#define CMD 6
+#define POLY 0x8003 // Generator Polynomial X^15 + X + 1
+#define POLYLEN 15 // Length of the POLY - 1
+
+#define BUTTONS (~PORTB >> 6) & 0b1111
+#define T3IF IFS0bits.T3IF
+#define T3IP IPC2bits.T3IP
+#define T3IE IEC0bits.T3IE
+#define T1IF IFS0bits.T1IF
+#define T1IP IPC0bits.T1IP
+#define T1IE IEC0bits.T1IE
+
+void serial_tx_byte(char data);
+int CRC_ChecksumWord(int* data, int Number_of_words, int prev_CRC);
+
+void init_hw_mc()
+{
+	//UART 2 xBee in both the kits
+	RPINR19bits.U2RXR = 6;
+	RPOR2bits.RP5R= 5; 
+}
+
+void serial_init_gp(int baud_rate)
+{
+	U2BRG = baud_rate;			// set baud rate
+	U2MODEbits.UARTEN = 1;
+
+	U2STAbits.UTXISEL0 = 1;		//Interrupt after each character transmit
+	U2STAbits.UTXISEL1 = 0;
+	U2STAbits.UTXEN = 1;		// enable tx
+
+	U2RXIF = 0;		//Clear RX IF
+	U2TXIF = 0;		//Clear TX IF
+	U2RXIP = 2;		//Clear RX IP
+	U2TXIP = 1;		//Clear TX IP
+	U2RXIE = 1;		//Clear RX IE
+	U2TXIE = 1;		//Clear TX IE
+}
+
+
+//Slot timer
+void __attribute__((interrupt, no_auto_psv)) _T1Interrupt (void) {
+	T1IF = 0;    //clear the timer interrupt bit
+	if (sync_locked){				//If system is synced
+		sync_timeout++;				//Increment timeout counter
+		if (sync_timeout == 30){	//If no sync in 3 sec.			
+			sync_locked = 0;		//Sync has been lost
+			access_granted = 0;		//Access lost
+			PIN_RED = 1;
+			PIN_GREEN = 0;
+		}
+	}
+	if (sync_locked){				//If sync
+		slot_num++;					//Increment slot number
+		if (slot_num == 10){		//Modulo 10
+			slot_num = 0;
+		}
+		if (slot_num == 0){
+			access_requested = 0;
+			status_info_sent = 0;
+		}
+	}
+	
+}
+
+void init_slot_timer(void){
+	//Tick timer
+	T1IF = 0;			//Clear interupt flag
+	T1IP = 3;			//Set interupt priority to 1
+	T1IE = 1;			//Enable timer 1 interupt
+	
+	TMR1 = 0;					//Clear timer 1 register
+	PR1 = 62500;				//Set period to 1ms. (40e6)*(100e-3)/64
+	T1CONbits.TCKPS = 2;		//Set timer prescaler to 1:64
+	T1CONbits.TON = 1;			//Turn on timer 1
+}
+
+void _ISR __attribute__((interrupt, no_auto_psv)) _U2RXInterrupt (void) {
+    U2RXIF = 0;		//Clear flag
+
+	while(U2STAbits.URXDA){					//While data is availables
+		rx_buffer[rx_wr_index++] = U2RXREG;	//Store in ring buffer
+	}
+}
+
+void serial_tx_byte(char data)
+{
+	if (TX_BUFFER_EMPTY && U2STAbits.TRMT){		//If both buffers empty
+		U2TXREG = data;				//Write character to UART buffer
+	}
+	else if (!TX_BUFFER_FULL){					//If ring buffer not full
+		tx_buffer[tx_wr_index++] = data;	//Write character to ring buffer
+	}
+}
+
+void serial_puts(char str[])
+{
+	int i = 0;
+	while(str[i] != 0){
+		if (TX_BUFFER_EMPTY && U2STAbits.TRMT){		//If both buffers empty
+			U2TXREG = str[i];				//Write character to UART buffer
+		}
+		else if (!TX_BUFFER_FULL){					//If ring buffer not full
+			tx_buffer[tx_wr_index++] = str[i];	//Write character to ring buffer
+		}
+		i++;
+	}
+}
+
+//Function to add stuff bytes, address, and stop byte and transmit on UART
+void tx_wrap(unsigned char array[], int len){
+	int i = 0;
+	serial_tx_byte(START_BYTE);			//Transmit address
+	while(i < len){						//For each byte in message
+		if (array[i] == START_BYTE){	//If byte is start byte
+			serial_tx_byte(START_BYTE);	//Transmit stop byte
+		}								
+		if (array[i] == STOP_BYTE){		//If byte is stop byte
+			serial_tx_byte(STOP_BYTE);	//Transmit stuff byte
+		}
+		serial_tx_byte(array[i++]);		//Transmit data byte
+	}	
+	serial_tx_byte(STOP_BYTE);			//Transmit stop byte
+	serial_tx_byte(0);					//Extra push 
+}
+
+//UART2 TX interupt
+void _ISR __attribute__((interrupt, no_auto_psv)) _U2TXInterrupt (void) {
+	if(!TX_BUFFER_EMPTY){								//If ring buffer not empty
+		U2TXREG = tx_buffer[tx_rd_index++];	//Write character to UART buffer
+	}	
+    U2TXIF = 0;							//Clear flag
+}
+
+//Access task
+void access(void)
+{
+	int rand_val;
+	while(TRUE){
+		if (sync_locked && !access_granted && !access_requested){	//If we have sync and access not granted
+			if (!waiting_for_access){			//If not waiting for access
+				request_access = 1;				//Request access
+				waiting_for_access = 1;			//Indicate waitng for access
+				access_requested = 1;
+				//PIN_ORANGE ^=1;
+			}
+			else{								//If still waiting for access
+				rand_val = TMR1 & 0b11;			//Use 2 LSBs of timer as random value (0-3)
+				if (rand_val == 0){				//If randome value = 0
+					request_access = 1;			//Request access again
+					waiting_for_access = 1;		//Indicate waiting for access
+					access_requested = 1;
+					//PIN_ORANGE ^=1;
+				}
+			}
+		}
+		sleep(900);								//Sleep for 900 ms
+	}
+}
+
+void process_tx_data(void)						//Task to process transmit data (Currently incomplete)
+{
+	while(TRUE){
+
+	crc_buffer_index = 0;						//Reset crc buffer index
+	int crc_val = 0;							
+	temp_tx_frame_index = 0;					//Reset frame index
+	int *temp_ptr;
+
+		if (request_access && (slot_num == 2)){			//If access needs to be requested
+			request_access = 0;							//Clear request for access
+			crc_buffer[0] = (MAC<<8) + ACCESS_REQ;		//Write slot, type and MAC
+			crc_val = CRC_ChecksumWord(crc_buffer, 1, 0);			//Generate CRC value
+			temp_tx_frame[temp_tx_frame_index++] = ACCESS_REQ;		//Write information to transmit buffer
+			temp_tx_frame[temp_tx_frame_index++] = MAC;
+			temp_tx_frame[temp_tx_frame_index++] = crc_val;
+			temp_tx_frame[temp_tx_frame_index++] = crc_val >> 8;
+			tx_wrap(temp_tx_frame, temp_tx_frame_index);			//Transmit data
+			PIN_ORANGE ^= 1;
+		}
+
+		if ((slot_num == (my_slot_num+3)) && (access_granted)){		//Place holder for status transmission (to be completed)
+			if (status_info_sent == 0){
+				status_info_sent = 1;
+				temp_tx_frame[temp_tx_frame_index++] = (my_slot_num << 4) + 4;	//Slot number and type 4
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.current_x;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.current_x >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.current_y;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.current_y >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.current_phi;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.current_phi >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.current_distance;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.current_distance >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.yaw;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.yaw >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.yaw_best;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.yaw_best >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.tilt;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.tilt >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.x_tri;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.x_tri >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.y_tri;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.y_tri >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.phi_tri;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.phi_tri >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.del_phi_tri;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.del_phi_tri >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.rw_bit;
+				temp_tx_frame[temp_tx_frame_index++] = motion_to_comm.rw_bit >> 8;
+				temp_tx_frame[temp_tx_frame_index++] = 0;
+
+				temp_ptr = (int*) &temp_tx_frame[0];
+
+				crc_val = CRC_ChecksumWord(temp_ptr, 13, 0);
+
+				temp_tx_frame_index--;
+				temp_tx_frame[temp_tx_frame_index++] = crc_val;
+				temp_tx_frame[temp_tx_frame_index++] = crc_val >> 8;
+				tx_wrap(temp_tx_frame, temp_tx_frame_index);			//Transmit data
+			}
+		}
+		yield();
+	}
+}
+
+void CRC_Init()
+{
+   CRCXOR = POLY;         // Generator Polynomial
+					      // X^12 + X^5
+
+   CRCCON = POLYLEN;     // Length of polynomial-1"
+}
+
+//Function to generate CRC taken from Microchip application notes
+int CRC_ChecksumWord(int* data, int Number_of_words, int prev_CRC)
+{
+  
+   CRCWDAT =prev_CRC;
+
+   CRCCONbits.CRCGO = 1 ;         	
+  do                                
+   {
+     while(1 != CRCCONbits.CRCMPT);
+
+       while((0 == CRCCONbits.CRCFUL)  && (0 < Number_of_words))
+       {
+         
+          CRCDAT= *data;
+          data++;
+          Number_of_words--;
+       }
+
+  }while (0 < Number_of_words);
+   
+  
+   while(CRCCONbits.CRCFUL==1);	        
+   CRCDAT = 0x0000;	/* Do this to shift the last word out of the 	*/
+			/* CRC shift register		        	*/
+
+   while(1 != CRCCONbits.CRCMPT);
+	CRCCONbits.CRCGO = 0;             
+
+	return(CRCWDAT);
+}
+
+void process_rx_data()	//Task to process received data
+{
+	unsigned char rx_byte, temp_byte;
+	int CRC = 0;
+	int i;
+	unsigned char slot_var, type_var;
+	int *temp_ptr;
+	while(TRUE) 
+	{ 
+	//Stage 1: Receive frame. Here, the start byte, stop byte, and stuff bytes are stripped away from frame
+	while(FRAME_STATUS == INCOMPLETE){		//While incomplete frame and rx_buffer not empty
+
+		while(RX_BUFFER_EMPTY){yield();}				//Yield when nothing in RX buffer
+		rx_byte = rx_buffer[rx_rd_index++];				//Read byte
+
+
+		switch(RX_STATE){
+			case wait_for_address:					//If waiting for address
+			
+				if (rx_byte == START_BYTE){			//Address byte rx
+					RX_STATE = wait_for_data;		
+				}
+				break;
+			case wait_for_data:
+				if (rx_byte == START_BYTE){			//Possible address stuff byte
+					RX_STATE = sb_wait_1;
+				}
+				else if (rx_byte == STOP_BYTE){		//Possible stop byte
+					if (temp_byte == SYNC){			//Sync received
+						RX_STATE = wait_for_address;
+						FRAME_STATUS = RECEIVED;
+
+					}
+					else{
+						RX_STATE = sb_wait_2;
+					}
+				}
+				else{
+					RX_STATE = wait_for_data;
+					temp_frame[0][temp_frame_index[0]++] = rx_byte;	//Data byte
+				}
+				temp_byte = rx_byte;
+				break;
+			case sb_wait_1:
+				if (rx_byte == START_BYTE){			//Stuff byte
+					RX_STATE = wait_for_data;
+					temp_frame[0][temp_frame_index[0]++] = rx_byte;
+				}
+				else if (rx_byte == STOP_BYTE) {	//Frame error
+					RX_STATE = wait_for_address;
+					temp_frame_index[0] = 0;
+				}
+				else{								//Last byte must have been start byte
+					RX_STATE = wait_for_data;
+					temp_frame_index[0] = 0;
+				}
+				break;
+			case sb_wait_2:
+				if (rx_byte == START_BYTE){			//Last bytes were stop and then start bytes
+					RX_STATE = wait_for_data;
+					FRAME_STATUS = RECEIVED;
+				}
+				else if (rx_byte == STOP_BYTE){		//Stuff byte
+					RX_STATE = wait_for_data;
+					temp_frame[0][temp_frame_index[0]++] = rx_byte;
+				}
+				else{								//Frame complete
+					RX_STATE = wait_for_address;
+					FRAME_STATUS = RECEIVED;
+				}
+				break;
+		}
+		if (temp_frame_index[0] == TEMP_FRAME_WIDTH-1){	//Frame buffer overflowed
+			RX_STATE = wait_for_address;
+			FRAME_STATUS = INCOMPLETE;
+			temp_frame_index[0] = 0;
+		}
+	}	//End of Stage 1
+
+	//Stage 2: Verify CRC/Sync
+	CRC = 1;
+	if (FRAME_STATUS == RECEIVED){
+	
+		if (temp_frame[0][0] == SYNC){	//Sync signal received
+			T1IE = 0;
+			T3IE = 0;
+			TMR1 = 0;
+			T1IF = 0;
+			sync_timeout = 0;
+			sync_locked = 1;
+			slot_num = 0;
+			PIN_RED = 0;
+			PIN_YELLOW ^= 1;
+			T1IE = 1;
+			T3IE = 1;
+		}
+		else{
+			if (temp_frame_index[0] % 2 == 1){
+				temp_frame[0][temp_frame_index[0]] = temp_frame[0][temp_frame_index[0]-1];
+				temp_frame[0][temp_frame_index[0]-1] = temp_frame[0][temp_frame_index[0]-2];
+				temp_frame[0][temp_frame_index[0]-2] = 0;
+				temp_frame_index[0]++;
+			}
+
+			temp_ptr = (int*) &temp_frame[0];
+
+			CRC = CRC_ChecksumWord(temp_ptr, (temp_frame_index[0])/2, 0);
+
+			if (CRC == 0){					//If CRC is good
+				for (i = 0; i < (temp_frame_index[0] - 2); i++){	//Copy frame to next buffer
+					temp_frame[1][i] = temp_frame[0][i];
+				}
+				FRAME_STATUS = CRC_GOOD;
+			}
+			else{
+				FRAME_STATUS = INCOMPLETE;	//Reset process
+			}
+		}
+	}
+
+	//Stage 3: dispatch data
+	if (FRAME_STATUS == CRC_GOOD){
+		slot_var = (temp_frame[1][0] & 0xF0)>>4;
+		type_var = temp_frame[1][0] & 0x0F;
+		if (!access_granted){
+			if(temp_frame[1][0] == ACCESS_RESP){
+				if (temp_frame[1][1] == MAC){
+					PIN_GREEN = 1;
+					access_granted = 1;
+					waiting_for_access = 0;
+					my_slot_num = temp_frame[1][2];
+				}
+			}
+		}
+		else if(my_slot_num == slot_var){
+			if (type_var == CMD) {
+				comm_to_motion.command = 	(((int) temp_frame[1][2])<<8) + ((int) temp_frame[1][1]);
+				comm_to_motion.x = 			(((int) temp_frame[1][4])<<8) + ((int) temp_frame[1][3]);
+				comm_to_motion.y = 			(((int) temp_frame[1][6])<<8) + ((int) temp_frame[1][5]);
+				command.received = 1;		// I made the change
+			}
+		}
+		else{
+			if (type_var == BROADCAST){
+				beacon_info.count = temp_frame[1][1];
+				beacon_info.x1 = (((int) temp_frame[1][3])<<8) + ((int) temp_frame[1][2]);
+				beacon_info.y1 = (((int) temp_frame[1][5])<<8) + ((int) temp_frame[1][4]);
+				beacon_info.x2 = (((int) temp_frame[1][7])<<8) + ((int) temp_frame[1][6]);
+				beacon_info.y2 = (((int) temp_frame[1][9])<<8) + ((int) temp_frame[1][8]);
+				beacon_info.x3 = (((int) temp_frame[1][11])<<8) + ((int) temp_frame[1][10]);
+				beacon_info.y3 = (((int) temp_frame[1][13])<<8) + ((int) temp_frame[1][12]);
+			}
+		}
+	}
+	
+	temp_frame_index[0] = 0;	//Reset data frame pointer
+	temp_frame_index[1] = 0;	//Reset data frame pointer
+					
+	FRAME_STATUS = INCOMPLETE;
+
+    yield();	//Yield after storing frame
+  }
+}
