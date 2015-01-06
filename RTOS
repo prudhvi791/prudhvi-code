@@ -1,0 +1,850 @@
+// RTOS Framework for Project 1
+// Spring 2013
+// Adusumilli Prudhvi 1000860735
+// Pandiyan Saravanan 1000848871
+// Sequeira Jocelyn Justina 1000849356
+
+
+//-----------------------------------------------------------------------------
+// Objectives and notes             
+//-----------------------------------------------------------------------------
+
+// Target uC:       33FJ128MC802
+// Devices used:    LEDs and PBs
+
+// Hardware description:
+// Red LED
+//   anode connected through 100ohm resistor to RB5 (pin 14), cathode grounded
+// Green LED
+//   anode connected through 100ohm resistor to RB4 (pin 11), cathode grounded
+// Yellow LED
+//   anode connected through 100ohm resistor to RB3 (pin 7), cathode grounded
+// Orange LED
+//   anode connected through 100ohm resistor to RB2 (pin 6), cathode grounded
+// Push Buttons
+//   push button 0 connected between RB12 (pin 23) and ground
+//   push button 1 connected between RB13 (pin 24) and ground
+//   push button 2 connected between RB14 (pin 25) and ground
+//   push button 3 connected between RB15 (pin 26) and ground
+
+//-----------------------------------------------------------------------------
+// Device includes and assembler directives             
+//-----------------------------------------------------------------------------
+
+#include <p33FJ128GP802.h>
+#define FCY 40000000UL                       // instruction cycle rate
+#include <libpic30.h>                        // __delay32
+#include<string.h>                                             // __delay_ms (max value is 268)
+                                             // __delay_us
+
+//_CONFIG1(FWDTEN_OFF & JTAGEN_OFF)            // set fuses
+//%_CONFIG2(POSCMOD_HS & FNOSC_PRIPLL)
+ 
+#include <stdio.h>
+
+#define PIN_YELLOW LATBbits.LATB3            // define i/o
+#define PIN_ORANGE LATBbits.LATB2
+#define PIN_GREEN LATBbits.LATB4
+#define PIN_RED LATBbits.LATB5
+#define PIN_PB0 PORTBbits.RB6
+#define PIN_PB1 PORTBbits.RB7
+#define PIN_PB2 PORTBbits.RB8
+#define PIN_PB3 PORTBbits.RB9
+
+//-----------------------------------------------------------------------------
+// RTOS Defines and Kernel Variables                
+//-----------------------------------------------------------------------------
+
+// function pointer
+typedef void (*_fn)();
+
+#define TRUE  1
+#define FALSE 0
+
+// semaphore
+#define MAX_QUEUE_SIZE 10
+struct semaphore
+{
+  unsigned int count;
+  unsigned int queue_size;
+  unsigned int sem_pid;
+  unsigned int process_queue[MAX_QUEUE_SIZE]; // store task index here
+} *s, key_pressed, key_released, flash_req,access;
+
+// task 
+#define STATE_INVALID    0 // no task
+#define STATE_READY      1 // ready to run
+#define STATE_BLOCKED    2 // has run, but now blocked by semaphore
+#define STATE_DELAYED    3 // has run, but now awaiting timer
+
+#define MAX_TASKS 10       // maximum number of valid tasks
+int task_current = 0;      // index of last dispatched task
+int task_count = 0;        // total number of valid tasks
+int preemptive_flag = 0;
+int execution_task = 0;
+int *SP = (int)0x1E;
+char str[500];
+
+int rtos_mode;             // mode
+#define MODE_COOPERATIVE 0
+#define MODE_PREEMPTIVE  1
+#define BAUD_19200 129
+
+struct _tcb
+{
+	 unsigned int state;            // see STATE_ values above
+	 unsigned int pid;              // used to uniquely identify process
+	 unsigned int sp;               // location of stack pointer for process
+	 unsigned int priority;         // 0=lowest, 7=highest
+	 unsigned int current_priority;
+	 unsigned int ticks;            // ticks until sleep complete
+	 unsigned int skipcount;
+} tcb[MAX_TASKS];
+
+unsigned int stack[MAX_TASKS][256];
+
+
+
+
+//-----------------------------------------------------------------------------
+// RTOS Kernel                
+//-----------------------------------------------------------------------------
+
+void rtos_init(int mode)
+{
+	int i;
+	rtos_mode = mode;
+	// no tasks running
+	task_count = 0;
+	// clear out tcb records
+	for (i = 0; i < MAX_TASKS; i++)
+	{
+		tcb[i].state = STATE_INVALID;
+		tcb[i].pid = 0;
+	}
+	T3CONbits.TON = 0;
+	T3CONbits.TCS = 0;
+	T3CONbits.TGATE = 0;
+	T3CONbits.TCKPS = 2;
+	TMR3 = 0x00;
+	PR3 = 625;
+	IPC2bits.T3IP = 4;
+	IFS0bits.T3IF = 0;
+	IEC0bits.T3IE = 1;
+	T3CONbits.TON = 1;
+	// REQUIRED: setup timer 3 for 1ms system timer
+}
+
+int rtos_scheduler()
+{
+	// REQUIRED: Implement prioritization to 8 levels
+	static int ok;
+	static int task = 0xFF;
+	ok = FALSE;
+	while (!ok)
+	{
+		task++;
+		if (task >= task_count)
+			task = 0;
+		if(tcb[task].skipcount==0)
+		{
+			ok = (tcb[task].state == STATE_READY);
+			tcb[task].skipcount = 7 - tcb[task].current_priority;
+		}
+		else
+		{ 
+			tcb[task].skipcount--;
+	
+		}
+	}
+	return task;
+}
+
+int create_process(_fn fn, int priority)
+{
+	int ok = FALSE;
+	int i = 0,j =0;
+	int found = FALSE;
+	IEC0bits.T3IE = 0; 
+	// save starting address if room in task list
+	if (task_count < MAX_TASKS)
+	{
+		// make sure fn not already in list (prevent reentrancy)
+		while (!found && (i < MAX_TASKS))
+		{
+			found = (tcb[i++].pid == (unsigned int) fn);
+		}
+		if (!found)
+		{
+			// find first available tcb record
+			i = 0;
+			while (tcb[i].state != STATE_INVALID) {i++;}
+			// REQUIRED: seed the stack with initial values to look like task has already run
+			stack[i][0] = (unsigned int) fn;
+			asm("MOV 0x0042,W5");
+			asm("MOV 0x0044,W6");
+			asm("MOV #0xFF00,W7");
+			asm("SL W5,#8,W2");
+			asm("SL W6,#4,W3");                                         
+			asm("AND W7,W2,W4");
+			asm("AND #0x0080,W3");
+			asm("IOR W4,W3,W1");
+			stack[i][1] = WREG1;
+			stack[i][2] = &stack[i][3];
+			for(j = 3;j<17;j++)
+			stack[i][j] = j;
+			stack[i][17] = RCOUNT;
+			stack[i][18] = DCOUNT;
+			stack[i][19] = PSVPAG;
+			stack[i][20] = TBLPAG;
+			//Seeding done
+			tcb[i].state = STATE_READY;
+			tcb[i].pid = (unsigned int) fn;
+			// REQUIRED: set the original SP pointer location (depends on init above)
+			tcb[i].sp = &stack[i][21]; // add offset as needed
+			tcb[i].priority = priority;    
+			tcb[i].current_priority = priority;    
+			// increment task count
+			task_count++;
+			ok = TRUE;
+		}
+	}
+	IEC0bits.T3IE = 1;
+	return ok;
+}
+
+void rtos_start()
+{
+	int *SP = (int*)0x1E;
+	task_current = rtos_scheduler();
+	*SP = tcb[task_current].sp;
+	// REQUIRED: continue the startup of the first process
+	asm( "pop TBLPAG");
+	asm( "pop PSVPAG");
+	asm( "pop DCOUNT");
+	asm( "pop RCOUNT");
+	asm( "pop WREG0" );		
+	asm( "pop WREG1" );		
+	asm( "pop WREG2" );		
+	asm( "pop WREG3" );		
+	asm( "pop WREG4" );		  
+	asm( "pop WREG5" );		
+	asm( "pop WREG6" );		
+	asm( "pop WREG7" );		
+	asm( "pop WREG8" );
+	asm( "pop WREG9" );
+	asm( "pop WREG10" );
+	asm( "pop WREG11" );
+	asm( "pop WREG12" );
+	asm( "pop WREG13" );
+	asm( "pop WREG14");
+	asm( "ulnk" );
+	asm( "retfie");
+}
+
+
+void init(void* p, int count)
+{
+	s = p;
+	s->count = count;  
+	s->queue_size = 0;
+}
+
+// REQUIRED: modify this function to yield execution back to scheduler
+void yield()
+{
+
+	IEC0bits.T3IE = 0;	
+	asm( "PUSH WREG7" );	  
+	asm( "PUSH WREG6" );				
+	asm( "PUSH WREG5" );		
+	asm( "PUSH WREG4" );		  
+	asm( "PUSH WREG3" );		
+	asm( "PUSH WREG2" );		
+	asm( "PUSH WREG1" );
+	asm( "PUSH WREG0" );
+	
+	int *temp = *SP;	
+	temp = temp - 4;
+	asm("MOV 0x0042,W5");
+	asm("MOV 0x0044,W6");
+	asm("MOV #0xFF00,W7");
+	asm("SL W5,#8,W2");
+	asm("SL W6,#4,W3");
+	asm("AND W7,W2,W4");
+	asm("AND #0x0080,W3");
+	asm("IOR W4,W3,W1");
+	*temp = WREG1;
+	
+	asm( "pop WREG0" );		
+	asm( "pop WREG1" );		
+	asm( "pop WREG2" );		
+	asm( "pop WREG3" );		
+	asm( "pop WREG4" );		  
+	asm( "pop WREG5" );		
+	asm( "pop WREG6" );		
+	asm( "pop WREG7" );		
+	
+	asm( "PUSH WREG14" );
+	asm( "PUSH WREG13" );
+	asm( "PUSH WREG12" );
+	asm( "PUSH WREG11" );
+	asm( "PUSH WREG10" );
+	asm( "PUSH WREG9" );
+	asm( "PUSH WREG8" );
+	asm( "PUSH WREG7" );	  
+	asm( "PUSH WREG6" );				
+	asm( "PUSH WREG5" );		
+	asm( "PUSH WREG4" );		  
+	asm( "PUSH WREG3" );		
+	asm( "PUSH WREG2" );		
+	asm( "PUSH WREG1" );
+	asm( "PUSH WREG0" );		
+	asm( "PUSH RCOUNT");
+	asm( "PUSH DCOUNT");
+	asm( "PUSH PSVPAG");
+	asm( "PUSH TBLPAG");
+
+	tcb[task_current].sp = *SP;
+	task_current = rtos_scheduler();
+	*SP = tcb[task_current].sp;
+	
+	asm( "pop TBLPAG");
+	asm( "pop PSVPAG");
+	asm( "pop DCOUNT");
+	asm( "pop RCOUNT");
+	asm( "pop WREG0" );		
+	asm( "pop WREG1" );		
+	asm( "pop WREG2" );		
+	asm( "pop WREG3" );		
+	asm( "pop WREG4" );		  
+	asm( "pop WREG5" );		
+	asm( "pop WREG6" );		
+	asm( "pop WREG7" );		
+	asm( "pop WREG8" );
+	asm( "pop WREG9" );
+	asm( "pop WREG10" );
+	asm( "pop WREG11" );
+	asm( "pop WREG12" );
+	asm( "pop WREG13" );
+	asm( "pop WREG14" );
+	asm( "ulnk" );
+	IEC0bits.T3IE = 1;
+	asm("retfie");
+
+}
+
+// REQUIRED: modify this function to support 1ms system timer
+// execution yielded back to scheduler until time elapses
+void sleep(unsigned int tick)
+{
+
+	tcb[task_current].ticks = (unsigned int) tick;
+	tcb[task_current].state = STATE_DELAYED;
+	yield();
+}
+
+// REQUIRED: modify this function to wait a semaphore with priority inheritance 
+// return if avail, else yield to scheduler
+void wait(struct semaphore* p)
+{
+	IEC0bits.T3IE = 0;
+	if((*p).count > 0)
+	{
+		(*p).count--;
+		(*p).sem_pid = tcb[task_current].pid;
+		execution_task = task_current;
+		IEC0bits.T3IE = 1;
+	}
+	else
+	{
+		(*p).process_queue[(*p).queue_size++] = task_current;
+		tcb[task_current].state = STATE_BLOCKED;
+		if(tcb[task_current].current_priority > tcb[execution_task].current_priority)
+			tcb[execution_task].current_priority = tcb[task_current].current_priority;
+		//sleep();
+		yield();
+	}
+IEC0bits.T3IE = 1;
+}
+
+// REQUIRED: modify this function to signal a semaphore is available
+void signal(struct semaphore* p)
+{
+	IEC0bits.T3IE = 0;
+	int i = 0;	
+	(*p).count++;
+	tcb[execution_task].current_priority = tcb[execution_task].priority;
+	if((*p).queue_size>0)
+	{
+		(*p).count--;
+		tcb[((*p).process_queue[0])].state = STATE_READY;
+		for( i=0;i<(*p).queue_size;i++)
+			(*p).process_queue[i] = (*p).process_queue[i+1];
+			(*p).queue_size--;
+	}
+	IEC0bits.T3IE = 1;
+}
+
+//-----------------------------------------------------------------------------
+// Subroutines                
+//-----------------------------------------------------------------------------
+
+// Initialize Hardware
+
+void serial_init(int baud_rate)
+{
+
+	RPINR18bits.U1RXR = 11;
+	RPOR5bits.RP10R = 3;
+	U1BRG = baud_rate; // set U1BRG value
+	U1MODE = 0x8000;
+	U1STA = 0X0400;
+	
+}
+
+void init_hw()
+{
+	AD1PCFGLbits.PCFG4 = 1;                    // make selected pins digital
+	AD1PCFGLbits.PCFG5 = 1;
+	LATBbits.LATB2 = 0;                        // write 0 into output latches
+	LATBbits.LATB3 = 0;
+	LATBbits.LATB4 = 0;
+	LATBbits.LATB5 = 0;
+	TRISBbits.TRISB2 = 0;                      // led pins outputs
+	TRISBbits.TRISB3 = 0;
+	TRISBbits.TRISB4 = 0;
+	TRISBbits.TRISB5 = 0;
+	CNPU2bits.CN21PUE = 1;                     // enable pull-ups for push buttons
+	CNPU2bits.CN22PUE = 1;
+	CNPU2bits.CN23PUE = 1;
+	CNPU2bits.CN24PUE = 1;
+	
+	
+	PLLFBDbits.PLLDIV = 38;
+	CLKDIVbits.PLLPRE = 0;
+	CLKDIVbits.PLLPOST = 0;
+	serial_init(BAUD_19200);
+	
+
+}  
+
+
+int read_pbs()
+{
+	int temp;
+	temp = ~PORTB;
+	temp = temp>>6;
+	temp&=0x000F;
+	return(temp);
+	//return (~PORTB >> 6);
+}
+
+// ------------------------------------------------------------------------------
+//  Task functions
+// ------------------------------------------------------------------------------
+
+// one task must be ready at all times or the scheduler will fail
+// the idle task is implemented for this purpose
+
+void idle()
+{
+
+	while(TRUE) 
+	{ 
+		PIN_ORANGE = 1;  
+		__delay_ms(1);
+		PIN_ORANGE = 0;
+		yield();
+	
+	}
+}
+
+void idle_2()
+{
+	while(TRUE) 
+	{ 
+		PIN_GREEN = 1;  
+		__delay_ms(1);
+		PIN_GREEN = 0;
+		sleep(125);
+	}
+}
+
+
+void flash_4hz()
+{
+	while(TRUE)
+	{
+		PIN_GREEN ^= 1;
+		sleep(125);
+	}
+}
+
+void one_shot()
+{
+	while(TRUE)
+	{
+		wait(&flash_req);
+		
+		PIN_YELLOW = 1;
+		sleep(1000);
+		PIN_YELLOW = 0;
+	
+	}
+}
+
+void part_of_lengthy_fn()
+{
+	// represent some lengthy operation
+	__delay_ms(1);
+	// give another process a chance
+	yield();
+}
+
+void lengthy_fn()
+{
+	long i;
+	while(TRUE)
+	{
+		for (i = 0; i < 4000; i++)
+		{
+			part_of_lengthy_fn();
+		}
+	PIN_RED ^= 1;
+	
+	}
+}
+
+void read_keys()
+{
+	int buttons;
+	while(TRUE)
+	{
+		wait(&key_released);
+		buttons = 0;
+		while (buttons == 0)
+		{
+			buttons = read_pbs();
+			yield();
+		}
+		signal(&key_pressed);
+		if ((buttons & 1) != 0)
+		{
+			PIN_YELLOW ^= 1;
+			PIN_RED = 1;
+		}
+		if ((buttons & 2) != 0)
+		{
+			signal(&flash_req);
+			PIN_RED = 0;
+		}
+		yield();
+	}
+}
+
+void debounce()
+{
+	int count;
+	while(TRUE)
+	{
+		wait(&key_pressed);
+		count = 10;
+		while (count != 0)
+		{  
+			sleep(10);
+			if (read_pbs() == 0)
+		  		count--;
+			else
+		  		count = 10;
+		}
+		signal(&key_released);
+	}
+}
+
+void serial_puts(char str[])
+{
+
+	int i;
+	for(i=0;i<strlen(str);i++)
+	{
+		while(U1STAbits.UTXBF);
+		U1TXREG = str[i];
+		
+	}
+
+}
+
+void uncooperative()
+{
+
+	while(TRUE)
+	{
+		while (read_pbs() == 8)
+		{
+		}
+		yield();
+	}
+}
+
+void display()
+{
+
+	while(TRUE)
+	{
+		sleep(10000);		
+		
+		int i;
+		for(i = 0;i<task_count;i++)
+		{
+			sprintf(str,"task number = %d\r\n",i);
+			serial_puts((char*)str);
+			sprintf(str,"state = %d\r\n",tcb[i].state);
+			serial_puts((char*)str);
+			sprintf(str,"pid = %d\r\n",tcb[i].pid);
+			serial_puts((char*)str);
+			sprintf(str,"sp = %d\r\n",tcb[i].sp);
+			serial_puts((char*)str);
+			sprintf(str,"priority = %d\r\n",tcb[i].priority);
+			serial_puts((char*)str);
+			sprintf(str,"current priority = %d\r\n",tcb[i].current_priority);
+			serial_puts((char*)str);
+			sprintf(str,"ticks = %d\r\n",tcb[i].ticks);
+			serial_puts((char*)str);
+			sprintf(str,"skipcount = %d\r\n\n",tcb[i].skipcount);
+			serial_puts((char*)str);
+		
+		}
+
+	}
+
+}
+
+
+// REQUIRED: Add code to manage blocked processes awaiting sleep() completion
+void __attribute__((interrupt, no_auto_psv)) _T3Interrupt (void)
+{
+	
+	IFS0bits.T3IF = 0;
+	int i=0;
+	for(;i<=task_count;i++)
+	{
+		if(tcb[i].state == STATE_DELAYED)
+		{	
+			tcb[i].ticks--;
+			if(tcb[i].ticks==0)
+			tcb[i].state = STATE_READY;
+		}
+
+	}	
+	
+	
+	
+	
+	if((tcb[task_current].pid == (unsigned int)uncooperative) || (tcb[task_current].pid == (unsigned int)display))
+	{
+		asm("ulnk");
+		asm("mov.d [--w15],w6");
+		asm("mov.d [--w15],w4");
+		asm("mov.d [--w15],w2");
+		asm("mov.d [--w15],w0");
+		asm("pop RCOUNT");	
+		asm("lnk #0");
+		
+		
+		asm( "PUSH WREG14" );
+		asm( "PUSH WREG13" );
+		asm( "PUSH WREG12" );
+		asm( "PUSH WREG11" );
+		asm( "PUSH WREG10" );
+		asm( "PUSH WREG9" );
+		asm( "PUSH WREG8" );
+		asm( "PUSH WREG7" );	  
+		asm( "PUSH WREG6" );				
+		asm( "PUSH WREG5" );		
+		asm( "PUSH WREG4" );		  
+		asm( "PUSH WREG3" );		
+		asm( "PUSH WREG2" );		
+		asm( "PUSH WREG1" );
+		asm( "PUSH WREG0" );		
+		asm( "PUSH RCOUNT");
+		asm( "PUSH DCOUNT");
+		asm( "PUSH PSVPAG");
+		asm( "PUSH TBLPAG");
+	
+		if(preemptive_flag)
+		{
+			tcb[task_current].sp = *SP;
+			task_current = rtos_scheduler();
+			*SP = tcb[task_current].sp;
+		}
+		asm( "pop TBLPAG");
+		asm( "pop PSVPAG");
+		asm( "pop DCOUNT");
+		asm( "pop RCOUNT");
+		asm( "pop WREG0" );		
+		asm( "pop WREG1" );		
+		asm( "pop WREG2" );		
+		asm( "pop WREG3" );		
+		asm( "pop WREG4" );		  
+		asm( "pop WREG5" );		
+		asm( "pop WREG6" );		
+		asm( "pop WREG7" );		
+		asm( "pop WREG8" );
+		asm( "pop WREG9" );
+		asm( "pop WREG10" );
+		asm( "pop WREG11" );
+		asm( "pop WREG12" );
+		asm( "pop WREG13" );
+		asm( "pop WREG14" );
+		
+		asm( "ulnk" )	;
+		asm( "retfie" );	
+		
+		
+	}
+	else 
+	{
+		asm("ulnk");
+		asm("mov.d [--w15],w6");
+		asm("mov.d [--w15],w4");
+		asm("mov.d [--w15],w2");
+		asm("mov.d [--w15],w0");
+		asm("pop RCOUNT");	
+		
+		asm("dec2 W15,W15");
+		asm("dec2 W15,W15");
+		asm("lnk #0");
+
+		asm( "PUSH WREG14" );
+		asm( "PUSH WREG13" );
+		asm( "PUSH WREG12" );
+		asm( "PUSH WREG11" );
+		asm( "PUSH WREG10" );
+		asm( "PUSH WREG9" );
+		asm( "PUSH WREG8" );
+		asm( "PUSH WREG7" );	  
+		asm( "PUSH WREG6" );				
+		asm( "PUSH WREG5" );		
+		asm( "PUSH WREG4" );		  
+		asm( "PUSH WREG3" );		
+		asm( "PUSH WREG2" );		
+		asm( "PUSH WREG1" );
+		asm( "PUSH WREG0" );		
+		asm( "PUSH RCOUNT");
+		asm( "PUSH DCOUNT");
+		asm( "PUSH PSVPAG");
+		asm( "PUSH TBLPAG");
+		
+		if(preemptive_flag)
+		{
+			tcb[task_current].sp = *SP;
+			task_current = rtos_scheduler();
+			*SP = tcb[task_current].sp;
+		}
+		asm( "pop TBLPAG");
+		asm( "pop PSVPAG");
+		asm( "pop DCOUNT");
+		asm( "pop RCOUNT");
+		asm( "pop WREG0" );		
+		asm( "pop WREG1" );		
+		asm( "pop WREG2" );		
+		asm( "pop WREG3" );		
+		asm( "pop WREG4" );		  
+		asm( "pop WREG5" );		
+		asm( "pop WREG6" );		
+		asm( "pop WREG7" );		
+		asm( "pop WREG8" );
+		asm( "pop WREG9" );
+		asm( "pop WREG10" );
+		asm( "pop WREG11" );
+		asm( "pop WREG12" );
+		asm( "pop WREG13" );
+		asm( "pop WREG14" );
+		
+		asm( "ulnk" )	;
+		asm( "retfie" );	
+		
+	}
+}
+
+//-----------------------------------------------------------------------------
+// Main                
+//-----------------------------------------------------------------------------
+
+int main(void)
+{
+	int ok;
+	int pb =0;
+	
+	// initialize hardware
+	init_hw();  
+	
+	// init semaphores
+	init(&key_pressed, 0);
+	init(&key_released, 1);
+	init(&flash_req, 5);
+	init(&access, 1);
+	
+	serial_puts("\r\nInitialization Complete....\r\n");
+	serial_puts("RTOS Running...\r\n");
+	serial_puts("Awaiting Mode Selection...\r\n");	
+	
+	// power-up flash
+	PIN_RED = 1;
+	__delay32(10000000);
+	PIN_RED = 0;
+	__delay32(10000000);
+	
+	// initialize selected RTOS
+	ok = FALSE;
+	while (!ok)
+	{
+	pb = read_pbs();
+		if (pb & 4) 
+		{
+			ok = TRUE;
+			rtos_init(MODE_COOPERATIVE);
+			preemptive_flag = 0;
+		}
+	
+		if (pb & 8) 
+		{
+			ok = TRUE;
+			rtos_init(MODE_PREEMPTIVE);
+			preemptive_flag = 1;
+		}
+	}
+	//ok = TRUE;
+	//rtos_init(MODE_COOPERATIVE);
+	
+	// add required idle process
+	ok =  create_process(idle, 0) >= 0;
+	
+	// add other processes
+	//ok &= create_process(idle_2, 2) >= 0;
+	ok &= create_process(flash_4hz, 7) >= 0;
+	ok &= create_process(lengthy_fn, 1) >= 0;
+	ok &= create_process(one_shot, 4) >= 0;
+	ok &= create_process(read_keys, 6) >= 0;
+	ok &= create_process(debounce, 4) >= 0;
+	ok &= create_process(uncooperative, 2) >= 0;
+	ok &= create_process(display,1) >= 0;	
+	
+	
+	// start up rtos
+	if (ok) 
+	{
+		rtos_start(); // never returns
+	}
+	else
+	{
+		PIN_RED = 1;
+	}
+	return 0;
+	// don't delete this unreachable code
+	// if a function is only called once in your code, it will be
+	// accessed with two goto instructions instead of call-return,
+	// so any stack-based code will not function correctly
+	yield(); sleep(0); wait(0); signal(0);
+}
