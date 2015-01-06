@@ -1,0 +1,88 @@
+import string,cgi,time
+import logging
+from SocketServer import ThreadingMixIn
+import threading
+import cgitb
+from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
+
+
+class MyHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        try:
+            print(self.path)
+            f = open(self.path.split('/')[1])#opening the file to read
+
+            self.send_response(200)
+            self.send_header('Content-type',	'text/html')
+            self.end_headers()
+            self.wfile.write(f.read())
+            f.close()
+            logging.info(vars((self)))
+            logging.info('\nClient: %s\n' % str(self.client_address))
+            logging.info('User-agent: %s\n' % str(self.headers['user-agent']))
+            logging.info('accept-language: %s\n\n\n' % str(self.headers['Accept-Language']))
+            
+            
+           
+            return
+                
+        except IOError:
+            self.send_error(404,'File Not Found: %s' % self.path)
+            logging.info('\n404 File Not Found: %s\n' % str(self.path))
+
+    def do_POST(self):
+        # Parse the form data posted
+        form = cgi.FieldStorage(
+            fp=self.rfile, 
+            headers=self.headers,
+            environ={'REQUEST_METHOD':'POST',
+                     'CONTENT_TYPE':self.headers['Content-Type'],
+                     })        
+        self.end_headers()
+        
+        for field in form.keys():
+            field_item = form[field]
+            if field_item.filename:
+                # The field contains an uploaded file
+                f = open(field_item.filename, 'wb')
+                f.write(field_item.file.read())
+                file_data = field_item.file.read()
+                file_len = len(file_data)
+                print (file_len)
+                del file_data
+                self.wfile.write("<HTML>POST OK.<BR><BR>");
+                self.wfile.write('\tUploaded %s as "%s" \n\n' % \
+                        (field, field_item.filename))
+                f.close()
+            else:
+                # Regular form value
+                self.wfile.write('\t%s=%s\n' % (field, form[field].value))
+        logging.info (vars(self))
+        logging.info('\host: %s\n' % str(self.headers['Host']))
+        logging.info('\nServer: %s\n' % str(self.client_address))
+        logging.info('content-type: %s\n' % str(self.headers['Content-Type']))
+        logging.info('content-length: %s\n\n\n' % str(self.headers['Content-Length']))
+        
+        return
+    
+
+
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    pass
+
+def main(ServerClass=ThreadedHTTPServer, HandlerClass=MyHandler):
+    logging.basicConfig(level=logging.INFO,
+                        filename='swathi.log', # log to this file
+                        format='%(asctime)s %(message)s') # include timestamp
+    try:
+        server = ServerClass(('', 80), HandlerClass)
+        print 'started httpserver...'
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print '^C received, shutting down server'
+        server.socket.close()
+
+if __name__ == '__main__':
+    main()
